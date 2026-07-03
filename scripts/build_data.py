@@ -32,11 +32,21 @@ import csv
 import gzip
 import io
 import json
+import re
 import sys
 import urllib.request
 import zipfile
 from pathlib import Path
 from typing import Dict, List, Optional, Set
+
+from unidecode import unidecode
+
+_ws_re = re.compile(r"\s+")
+
+
+def normalize(text: str) -> str:
+    """Match airportsearch._match.normalize (fold to lowercase ASCII)."""
+    return _ws_re.sub(" ", unidecode(text or "").lower()).strip()
 
 OURAIRPORTS_URL = "https://davidmegginson.github.io/ourairports-data/airports.csv"
 OPTD_URL = (
@@ -45,6 +55,7 @@ OPTD_URL = (
 )
 GEONAMES_URL = "https://download.geonames.org/export/dump/alternateNamesV2.zip"
 CITIES_URL = "https://download.geonames.org/export/dump/{}.zip"
+COUNTRYINFO_URL = "https://download.geonames.org/export/dump/countryInfo.txt"
 
 ROOT = Path(__file__).resolve().parents[1]
 CACHE = ROOT / ".build_cache"
@@ -52,6 +63,7 @@ DATA_DIR = ROOT / "src" / "airportsearch" / "data"
 OUT = DATA_DIR / "airports.jsonl.gz"
 CITIES_OUT = DATA_DIR / "cities.jsonl.gz"
 LANDMASK_OUT = DATA_DIR / "landmask.bin.gz"
+COUNTRIES_OUT = DATA_DIR / "countries.json"
 
 # Land mask grid (must match airportsearch/geo.py).
 LM_RES = 0.25
@@ -177,32 +189,93 @@ def load_ourairports(path: Path) -> Dict[str, dict]:
     return out
 
 
-def load_geonames_altnames(path: Path, wanted: Set[int]) -> Dict[int, List[str]]:
-    """Stream the (large) GeoNames alt-names zip, keeping only ``wanted`` geoname ids."""
+def load_geonames_altnames(path: Path, wanted: Set[int], country_gids: Set[int]):
+    """Stream the (large) GeoNames alt-names zip once.
+
+    Returns ``(place_names, country_names)``: alternate names for ``wanted``
+    (airport/city) geoname ids, and separately for ``country_gids`` — for the
+    latter abbreviations (UK, USA, UAE) are kept so users can type them.
+    """
     result: Dict[int, List[str]] = {}
+    countries: Dict[int, List[str]] = {}
     seen: Dict[int, Set[str]] = {}
     with zipfile.ZipFile(path) as zf:
         member = next(n for n in zf.namelist() if n.endswith("alternateNamesV2.txt"))
         with zf.open(member) as raw:
             for line in io.TextIOWrapper(raw, encoding="utf-8"):
                 cols = line.rstrip("\n").split("\t")
-                if len(cols) < 4:
-                    continue
-                if not cols[1].isdigit():
+                if len(cols) < 4 or not cols[1].isdigit():
                     continue
                 gid = int(cols[1])
-                if gid not in wanted:
+                is_place = gid in wanted
+                is_country = gid in country_gids
+                if not (is_place or is_country):
                     continue
                 lang, name = cols[2], cols[3].strip()
-                if not name or len(name) > 60 or lang in GEONAMES_SKIP_LANGS:
+                if not name or len(name) > 60:
                     continue
                 key = name.casefold()
-                bucket = seen.setdefault(gid, set())
-                if key in bucket:
-                    continue
-                bucket.add(key)
-                result.setdefault(gid, []).append(name)
-    return result
+                if is_place and lang not in GEONAMES_SKIP_LANGS:
+                    bucket = seen.setdefault(gid, set())
+                    if key not in bucket:
+                        bucket.add(key)
+                        result.setdefault(gid, []).append(name)
+                # Countries: keep language names + abbreviations, drop only pure links.
+                if is_country and lang not in {"link", "wkdt", "post", "unlc", "fr_1793"}:
+                    countries.setdefault(gid, []).append(name)
+    return result, countries
+
+
+def load_countryinfo(refresh: bool):
+    """GeoNames countryInfo.txt -> (rows, gid_to_iso).
+
+    rows: list of (iso2, iso3, name, geoname_id). Comment lines start with '#'.
+    """
+    path = download(COUNTRYINFO_URL, CACHE / "countryInfo.txt", refresh)
+    rows = []
+    gid_to_iso: Dict[int, str] = {}
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            if line.startswith("#") or not line.strip():
+                continue
+            c = line.rstrip("\n").split("\t")
+            if len(c) < 17 or not c[0].strip():
+                continue
+            iso2, iso3, name, gid = c[0].strip(), c[1].strip(), c[4].strip(), c[16].strip()
+            rows.append((iso2, iso3, name, gid))
+            if gid.isdigit():
+                gid_to_iso[int(gid)] = iso2
+    return rows, gid_to_iso
+
+
+def build_countries(rows, country_alt: Dict[int, List[str]]) -> int:
+    """Write countries.json: normalized country name/alias/code -> ISO2.
+
+    Names come entirely from GeoNames (countryInfo.txt primary names + alternate
+    names, including multilingual forms and abbreviations like UK / USA), so no
+    country mapping is hard-coded.
+    """
+    mapping: Dict[str, str] = {}
+
+    def put(alias: str, iso2: str) -> None:
+        key = normalize(alias)
+        if key and key not in mapping:
+            mapping[key] = iso2
+
+    for iso2, iso3, name, gid in rows:
+        put(name, iso2)
+        put(iso2, iso2)
+        # NB: ISO3 codes are intentionally omitted — they are 3 letters and collide
+        # with IATA airport codes (FRA=Frankfurt vs France, CAN=Guangzhou vs Canada).
+        if gid.isdigit():
+            for alt in country_alt.get(int(gid), []):
+                put(alt, iso2)
+
+    with open(COUNTRIES_OUT, "w", encoding="utf-8") as fh:
+        json.dump(mapping, fh, ensure_ascii=False, sort_keys=True)
+    print(f"  countries: {len(mapping)} name/alias -> ISO2 -> {COUNTRIES_OUT.name} "
+          f"({COUNTRIES_OUT.stat().st_size/1e3:.0f} KB)")
+    return len(mapping)
 
 
 def build_cities(cities_file: str, refresh: bool) -> int:
@@ -293,8 +366,15 @@ def build(coverage: str = "broad", geonames: bool = True,
         print(f"  broad coverage adds {added} OPTD-only airports (page_rank > {min_page_rank})")
     print(f"  total airports selected: {len(chosen)}")
 
-    # GeoNames enrichment (optional, streamed).
+    print("Parsing GeoNames countryInfo...")
+    country_rows, gid_to_iso = load_countryinfo(refresh)
+    country_gids = set(gid_to_iso)
+    print(f"  {len(country_rows)} countries")
+
+    # GeoNames enrichment (optional, streamed). Country alternate names are
+    # collected in the same pass so the country lookup is data-driven too.
     geo_names: Dict[int, List[str]] = {}
+    country_alt: Dict[int, List[str]] = {}
     if geonames:
         wanted: Set[int] = set()
         for entry in chosen.values():
@@ -307,9 +387,9 @@ def build(coverage: str = "broad", geonames: bool = True,
         print(f"Downloading GeoNames alt-names for {len(wanted)} features...")
         gn_path = download(GEONAMES_URL, CACHE / "alternateNamesV2.zip", refresh)
         print("  streaming + filtering (this takes a minute)...")
-        geo_names = load_geonames_altnames(gn_path, wanted)
+        geo_names, country_alt = load_geonames_altnames(gn_path, wanted, country_gids)
         total_names = sum(len(v) for v in geo_names.values())
-        print(f"  kept {total_names} names across {len(geo_names)} features")
+        print(f"  kept {total_names} place names + country aliases for {len(country_alt)} countries")
 
     print("Writing dataset...")
     OUT.parent.mkdir(parents=True, exist_ok=True)
@@ -372,6 +452,9 @@ def build(coverage: str = "broad", geonames: bool = True,
 
     size_mb = OUT.stat().st_size / 1e6
     print(f"  airports: {written} -> {OUT.name} ({size_mb:.1f} MB)")
+
+    print("Building country lookup...")
+    build_countries(country_rows, country_alt)
 
     if cities_file != "none":
         print("Building city gazetteer (for nearest-airport fallback)...")

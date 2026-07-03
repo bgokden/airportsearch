@@ -52,6 +52,7 @@ packages = ["src/airportsearch"]
 "src/airportsearch/data/airports.jsonl.gz" = "airportsearch/data/airports.jsonl.gz"
 "src/airportsearch/data/cities.jsonl.gz" = "airportsearch/data/cities.jsonl.gz"
 "src/airportsearch/data/landmask.bin.gz" = "airportsearch/data/landmask.bin.gz"
+"src/airportsearch/data/countries.json" = "airportsearch/data/countries.json"
 
 [tool.hatch.build.targets.sdist]
 include = ["src/airportsearch", "scripts", "tests", "README.md", "LICENSE"]

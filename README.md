@@ -8,6 +8,9 @@ airports, scored and ranked.
 - 🔎 **Fuzzy & partial** — handles typos, missing words, and abbreviations.
 - 🌍 **Multilingual** — matches alternate names in many languages via GeoNames
   (e.g. `Londres`, `ロンドン`, `Мюнхен`, `北京`, `Estambul`, `Constantinople`).
+- 🧩 **Any field, any combination** — airport name, IATA, city, or country, and
+  mixes of them: `LHR`, `Heathrow`, `London`, `Paris France`, `airports in Japan`,
+  `JFK New York`. A bare country returns its busiest airports (`via="country"`).
 - 🏙️ **City *and* airport IATA codes** — `NYC` → `JFK` / `EWR` / `LGA`,
   each tagged with its metropolitan `city_iata`.
 - ✈️ **Commercial only** — airports with scheduled airline service; military
@@ -50,6 +53,18 @@ hit.distance_km    # city->airport distance for via="nearest" hits, else None
 hit.airport        # Airport dataclass:
 #   iata, icao, name, city_iata, city_name, country_code, country_name,
 #   region, latitude, longitude, type, page_rank, geoname_id, source, alt_names
+```
+
+Fielded queries — name, IATA, city, country, and combinations:
+
+```python
+airportsearch.search("Heathrow")        # airport name  -> LHR
+airportsearch.search("LHR")             # airport IATA   -> LHR
+airportsearch.search("London")          # city           -> LHR, LGW, LTN ...
+airportsearch.search("Japan")           # country        -> HND, NRT, FUK ... (via="country")
+airportsearch.search("Paris France")    # city + country -> CDG, ORY, BVA
+airportsearch.search("JFK New York")    # IATA + city    -> JFK
+airportsearch.search("Deutschland")     # multilingual country -> Frankfurt, Munich ...
 ```
 
 Nearest-airport fallback for a city with no airport of its own:
@@ -127,7 +142,7 @@ The bundled dataset (~5,000 airports) is built by
 | --- | --- | --- |
 | [OpenTravelData](https://github.com/opentraveldata/opentraveldata) | City + airport IATA codes, page-rank, geoname ids, alternate names | Open (attribution) |
 | [OurAirports](https://ourairports.com/data/) | Commercial filter (facility type + scheduled service), coordinates | Public domain |
-| [GeoNames](https://www.geonames.org/) | Deep multilingual alternate names, city gazetteer (`cities15000`) | CC BY 4.0 |
+| [GeoNames](https://www.geonames.org/) | Deep multilingual alternate names, city gazetteer (`cities15000`), country names/aliases (`countryInfo` + alternate names, incl. multilingual & `UK`/`USA`) | CC BY 4.0 |
 | [global-land-mask](https://pypi.org/project/global-land-mask/) | Coarse land/water bitmap (built once, ~12 KB) for water-aware nearest airport | build-time only |
 
 Each record carries a `source` (`ourairports` / `optd` / `both`) so you can see

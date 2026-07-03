@@ -7,7 +7,7 @@ from functools import lru_cache
 from importlib import resources
 from typing import List, Optional, Tuple
 
-from ._match import TrigramMatcher
+from ._match import TrigramMatcher, normalize, trigrams
 from .models import City
 
 _DATA_PACKAGE = "airportsearch.data"
@@ -15,6 +15,13 @@ _DATA_FILE = "cities.jsonl.gz"
 
 # A resolved city must clear this fuzzy score to be trusted for the fallback.
 CITY_MIN_SCORE = 85.0
+
+
+def _cosine(a: str, b: str) -> float:
+    ta, tb = trigrams(normalize(a)), trigrams(normalize(b))
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / ((len(ta) * len(tb)) ** 0.5)
 
 
 class CityGazetteer:
@@ -44,31 +51,44 @@ class CityGazetteer:
     def __len__(self) -> int:
         return len(self.cities)
 
-    def resolve(self, query: str, min_score: float = CITY_MIN_SCORE) -> Optional[Tuple[City, float]]:
-        """Return ``(city, score)`` for the best-matching city, or ``None``.
+    def resolve(
+        self, query: str, min_score: float = CITY_MIN_SCORE,
+        country_code: Optional[str] = None,
+    ) -> Optional[Tuple[City, float]]:
+        """Return ``(city, match_cosine)`` for the best-matching city, or ``None``.
 
         Match score comes first: only among cities whose score is within a small
         band of the best do we prefer the more populous one. So "Utrecht" resolves
         to the Dutch city (exact match, 376k) rather than a higher-population city
-        that merely fuzzy-matches worse.
+        that merely fuzzy-matches worse. ``country_code`` restricts candidates to
+        one country (used when the query names a country too, e.g. "Bath UK").
+
+        The returned cosine is the trigram overlap between the query and the
+        matched alias — comparable to an airport name-match cosine, so the caller
+        can decide whether the city or an airport name is the better interpretation.
         """
         # Cities are (mostly) single tokens, so require real trigram overlap: this
         # is the length-aware gate that stops "utrecth" resolving to "recife".
-        hits = self._matcher.query(query, limit=50, score_cutoff=min_score, min_cosine=0.34)
+        hits = self._matcher.query(query, limit=80, score_cutoff=min_score, min_cosine=0.34)
+        if country_code:
+            hits = [h for h in hits if self.cities[h[0]].country_code == country_code]
         if not hits:
             return None
         top_score = hits[0][1]  # process.extract returns best-first
         band = top_score - 5.0
         best_idx = None
         best_pop = -1
-        best_score = 0.0
-        for owner, score, _display in hits:
+        best_display = ""
+        for owner, score, display in hits:
             if score < band:
                 continue
             city = self.cities[owner]
             if city.population > best_pop:
-                best_pop, best_idx, best_score = city.population, owner, score
-        return (self.cities[best_idx], best_score) if best_idx is not None else None
+                best_pop, best_idx, best_display = city.population, owner, display
+        if best_idx is None:
+            return None
+        cosine = _cosine(query, best_display)
+        return (self.cities[best_idx], cosine)
 
 
 def _load_records() -> List[dict]:

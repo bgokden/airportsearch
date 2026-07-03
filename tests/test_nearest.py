@@ -69,8 +69,8 @@ def test_fallback_can_be_disabled():
 def test_gazetteer_resolves_city():
     gaz = a.get_gazetteer()
     assert gaz is not None
-    city, score = gaz.resolve("Utrecht")
-    assert city.country_code == "NL" and score >= 85
+    city, cosine = gaz.resolve("Utrecht")  # returns (City, match_cosine)
+    assert city.country_code == "NL" and cosine >= 0.9
 
 
 def test_gazetteer_rejects_substring_false_positive():

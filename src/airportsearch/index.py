@@ -24,13 +24,18 @@ _POP_WEIGHT = 0.15
 # too-permissive 40 so weak fuzzy noise is dropped rather than shown.
 DEFAULT_SCORE_CUTOFF = 70.0
 
-# We trust the airport-name result (and skip the nearest fallback) when the top
-# hit both scores well AND its matched alias is genuinely trigram-similar to the
-# query. The cosine part is what distinguishes a real name match ("Charles de
-# Gaulle" -> "Charles de Gaulle Airport") from a nickname coincidence ("The
-# Hague" -> "The Windy City"), which score similarly but share few trigrams.
-_NAME_TRUST_SCORE = 82.0
-_NAME_TRUST_COSINE = 0.34
+# Country name/alias -> ISO2 comes from the bundled, GeoNames-derived
+# ``countries.json`` (built by scripts/build_data.py); nothing is hard-coded here.
+_COUNTRIES_FILE = "countries.json"
+
+# Common English words that collide with real IATA codes (THE=Teresina,
+# NEW=New Orleans Lakefront, FOR=Fortaleza...). They are almost never intended as
+# a code inside a phrase, so they are excluded from exact-code detection.
+_CODE_STOPWORDS = {
+    "the", "and", "for", "are", "new", "was", "you", "all", "one", "out", "our",
+    "her", "his", "has", "its", "not", "now", "old", "off", "can", "day", "way",
+    "may", "see", "two", "who", "why", "how", "let", "use", "far", "air",
+}
 
 
 def _trigram_cosine(a: str, b: str) -> float:
@@ -38,6 +43,15 @@ def _trigram_cosine(a: str, b: str) -> float:
     if not ta or not tb:
         return 0.0
     return len(ta & tb) / ((len(ta) * len(tb)) ** 0.5)
+
+
+def _load_country_lookup() -> Dict[str, str]:
+    """Load the bundled GeoNames-derived country map, or ``{}`` if absent."""
+    try:
+        with resources.files(_DATA_PACKAGE).joinpath(_COUNTRIES_FILE).open("rb") as fh:
+            return json.load(fh)
+    except (FileNotFoundError, OSError, ValueError):
+        return {}
 
 # "Logical nearest" tuning.
 _MAX_NEAREST_KM = 400.0        # don't offer airports absurdly far from the city
@@ -56,6 +70,9 @@ class AirportIndex:
         self.airports: List[Airport] = []
         self._by_iata: Dict[str, int] = {}
         self._by_city_iata: Dict[str, List[int]] = {}
+        self._by_country: Dict[str, List[int]] = {}   # ISO2 -> airport indices
+        self._country_lookup: Dict[str, str] = {}      # normalized name/alias -> ISO2
+        self._iso2: set = set()                        # valid ISO2 codes (lowercased)
         self._matcher = TrigramMatcher()
 
         max_pr = 0.0
@@ -84,6 +101,12 @@ class AirportIndex:
             self._by_iata[airport.iata.lower()] = idx
             if airport.city_iata:
                 self._by_city_iata.setdefault(airport.city_iata.lower(), []).append(idx)
+            if airport.country_code:
+                cc = airport.country_code.upper()
+                self._by_country.setdefault(cc, []).append(idx)
+                self._iso2.add(cc.lower())
+                if airport.country_name:
+                    self._country_lookup.setdefault(normalize(airport.country_name), cc)
 
             # Alias set: everything a user might type.
             aliases = {airport.name}
@@ -96,6 +119,14 @@ class AirportIndex:
                 self._matcher.add(alias, idx)
 
         self._matcher.build()
+        # Country name/alias -> ISO2 from the bundled GeoNames-derived file (falls
+        # back to the country names already gathered from the airport records).
+        for alias, code in _load_country_lookup().items():
+            self._country_lookup.setdefault(alias, code)
+            self._iso2.add(code.lower())
+        # Order each country's airports by popularity, for "only country" queries.
+        for cc, idxs in self._by_country.items():
+            idxs.sort(key=lambda i: self.airports[i].page_rank, reverse=True)
         self._max_page_rank = max_pr or 1.0
 
     # -- public API -------------------------------------------------------
@@ -117,47 +148,179 @@ class AirportIndex:
     ) -> List[SearchResult]:
         """Return up to ``k`` airports best matching ``query``, ordered by score desc.
 
-        ``query`` may be an airport name, alternate/multilingual name, airport IATA,
-        city IATA, city name, or a combination. Missing/partial parts are fine.
+        ``query`` may be any of — or any combination of — an airport name or
+        alternate/multilingual name, an airport IATA code, a city name or city
+        IATA code, and a country name or code (e.g. "London", "LHR", "Paris
+        France", "airports in Japan", "JFK New York"). Missing/partial parts are fine.
 
-        If no airport *name* matches confidently and ``nearest_fallback`` is set,
-        the query is resolved to a city and the nearest logical airports are
-        returned instead (``via="nearest"``), respecting country borders and water.
+        When the query text doesn't match an airport *name* better than it matches
+        a *city* (and ``nearest_fallback`` is set), the city is resolved and the
+        nearest logical airports are returned (``via="nearest"``), respecting
+        country borders and water. A bare country returns that country's busiest
+        airports (``via="country"``).
         """
         q = normalize(query)
         if not q:
             return []
 
-        name_hits = self._name_search(q, k, score_cutoff)
+        country, text = self._split_country(q)
+        if country and not text:
+            return self._top_in_country(country, k)  # "France", "Japan", "USA"
+        return self._search_text(text or q, k, score_cutoff, nearest_fallback, country)
 
-        # Trust the name result only if the top hit is a strong, genuine match.
-        trusted = False
+    def _search_text(
+        self, text: str, k: int, score_cutoff: float,
+        nearest_fallback: bool, country: Optional[str],
+    ) -> List[SearchResult]:
+        name_hits = self._name_search(text, k, score_cutoff)
+        # When a country is specified, restrict name hits to it (so "Bath UK"
+        # cannot return "Bata" in Equatorial Guinea).
+        if country:
+            name_hits = [h for h in name_hits if h.airport.country_code == country]
+
+        airport_cos = _trigram_cosine(text, name_hits[0].matched) if name_hits else 0.0
+
+        resolved = None
+        if nearest_fallback:
+            gaz = _cities.get_gazetteer()
+            if gaz is not None:
+                resolved = gaz.resolve(text, country_code=country)
+
+        # Decide between the airport-name interpretation and the city interpretation.
+        # Both can match at cosine 1.0 by coincidence (a foreign-script alias of
+        # "Bata" romanizes to "bath"; "羽田" romanizes to "yu tian" == a Chinese
+        # town). We keep the name result only when it is genuinely the better read:
+        #   - an explicit IATA code was typed, or
+        #   - the name clearly out-matches the city, or
+        #   - the matched airport is a major hub (trust the famous name), or
+        #   - the matched airport actually sits near the resolved city.
         if name_hits:
-            top = name_hits[0]
-            if top.score >= _NAME_TRUST_SCORE and _trigram_cosine(q, top.matched) >= _NAME_TRUST_COSINE:
-                trusted = True
+            top = name_hits[0].airport
+            tie_or_better = resolved is None or airport_cos >= resolved[1] - 0.01
+            near = resolved is not None and self._airport_near_city(top, resolved[0], 200.0)
+            major = (top.page_rank / self._max_page_rank) >= 0.05
+            trust_name = (
+                resolved is None
+                or self._has_exact_code(text)
+                or airport_cos > resolved[1] + 0.05      # name clearly out-matches the city
+                or (tie_or_better and (near or major))    # tie broken by locality or real traffic
+            )
+            if trust_name:
+                return name_hits[:k]
 
-        if not trusted and nearest_fallback:
-            nearest = self._nearest_fallback(query, k)
-            if nearest:
-                return nearest
+        if resolved is not None:
+            near = self._nearest_results(resolved[0], k, country)
+            if near:
+                return near
         return name_hits[:k]
+
+    def _code_tokens(self, text: str) -> List[str]:
+        """Tokens that are explicit airport/city IATA codes.
+
+        Words that collide with codes (the=THE, new=NEW) are ignored only in
+        multi-word queries; a lone "CAN"/"FOR" is taken as the code the user typed.
+        """
+        toks = text.split()
+        multi = len(toks) > 1
+        out = []
+        for t in toks:
+            if len(t) == 3 and t.isalpha() and (t in self._by_iata or t in self._by_city_iata):
+                if multi and t in _CODE_STOPWORDS:
+                    continue
+                out.append(t)
+        return out
+
+    def _has_exact_code(self, text: str) -> bool:
+        return bool(self._code_tokens(text))
+
+    @staticmethod
+    def _airport_near_city(airport: Airport, city: City, within_km: float) -> bool:
+        if airport.latitude is None or airport.longitude is None:
+            return False
+        return haversine_km(
+            city.latitude, city.longitude, airport.latitude, airport.longitude
+        ) <= within_km
+
+    def _nearest_results(self, city: City, k: int, country: Optional[str]) -> List[SearchResult]:
+        near = self.nearest_airports(
+            city.latitude, city.longitude, k=k,
+            country_code=country or city.country_code,
+            restrict_country=country,
+        )
+        label = f"{city.name}" + (f", {city.country_code}" if city.country_code else "")
+        out = []
+        for airport, dist, effective in near:
+            score = round(100.0 * math.exp(-effective / 500.0), 2)  # closer => higher
+            out.append(SearchResult(
+                airport=airport, score=score, matched=label,
+                via="nearest", distance_km=round(dist, 1),
+            ))
+        return out
+
+    def _top_in_country(self, country: str, k: int) -> List[SearchResult]:
+        idxs = self._by_country.get(country, [])[:k]  # pre-sorted by page_rank
+        if not idxs:
+            return []
+        top_pr = self.airports[idxs[0]].page_rank or 1.0
+        out = []
+        for i in idxs:
+            ap = self.airports[i]
+            score = round(60.0 + 40.0 * (ap.page_rank / top_pr), 2) if top_pr else 60.0
+            out.append(SearchResult(airport=ap, score=score, matched=ap.country_name or country, via="country"))
+        return out
+
+    def _split_country(self, q: str) -> Tuple[Optional[str], str]:
+        """Split ``q`` into ``(country_code, remaining_text)``.
+
+        Detects a country as the whole query (name, alias, or bare ISO2 code) or
+        as a trailing span of up to three words ("Paris France", "sfo united
+        states"). Only the whole-query form accepts a bare 2-letter code.
+
+        A whole query that is itself a known IATA code usually wins over country
+        detection (so "FRA" is Frankfurt, not France). The exception: when the code
+        belongs to a very minor airport but is also a common country alias, the
+        country wins (so "USA" is the United States, not tiny Concord Regional, NC).
+        """
+        if len(q) == 3 and q.isalpha() and (q in self._by_iata or q in self._by_city_iata):
+            code = self._country_lookup.get(q)
+            ai = self._by_iata.get(q)
+            minor = ai is not None and (self.airports[ai].page_rank / self._max_page_rank) < 0.02
+            if code and (ai is None or minor):
+                return code, ""
+            return None, q
+        code = self._country_lookup.get(q)
+        if code is None and len(q) == 2 and q in self._iso2:
+            code = q.upper()
+        if code:
+            return code, ""
+        tokens = q.split()
+        for span in (3, 2, 1):
+            if len(tokens) > span:  # must leave at least one remainder token
+                tail = " ".join(tokens[-span:])
+                code = self._country_lookup.get(tail)
+                if code:
+                    return code, " ".join(tokens[:-span])
+        return None, q
 
     def nearest_airports(
         self, latitude: float, longitude: float, k: int = 5,
         country_code: Optional[str] = None, max_km: float = _MAX_NEAREST_KM,
+        restrict_country: Optional[str] = None,
     ) -> List[Tuple[Airport, float, float]]:
         """The ``k`` nearest commercial airports to a point, border/water-aware.
 
         Ranking is by an *effective* distance that penalizes crossing a national
         border and crossing water, so the result is reachable by land rather than
         merely close as the crow flies. Returns ``(airport, real_km, effective_km)``
-        sorted by effective distance ascending.
+        sorted by effective distance ascending. ``country_code`` softly prefers that
+        country; ``restrict_country`` hard-limits results to it.
         """
         landmask = get_landmask()
         scored: List[Tuple[float, float, Airport]] = []  # (effective, real, airport)
         for ap in self.airports:
             if ap.latitude is None or ap.longitude is None:
+                continue
+            if restrict_country and ap.country_code != restrict_country:
                 continue
             real = haversine_km(latitude, longitude, ap.latitude, ap.longitude)
             if real > max_km * 2:  # cheap prefilter; effective can only grow
@@ -183,13 +346,14 @@ class AirportIndex:
             if cur is None or score > cur[0]:
                 best[idx] = (score, matched)
 
-        # Exact code hits (airport IATA, then city IATA) — strong signals.
-        if len(q) == 3 and q.isalpha():
-            up = q.upper()
-            idx = self._by_iata.get(q)
+        # Exact code hits: any token that is a known airport or city IATA
+        # (so "JFK" and "JFK New York" both surface JFK as a strong signal).
+        for tok in set(self._code_tokens(q)):
+            up = tok.upper()
+            idx = self._by_iata.get(tok)
             if idx is not None:
                 offer(idx, 100.0, up)
-            for cidx in self._by_city_iata.get(q, []):
+            for cidx in self._by_city_iata.get(tok, []):
                 offer(cidx, 97.0, up)
 
         limit = max(k * 20, 100)
@@ -206,31 +370,6 @@ class AirportIndex:
             results.append(SearchResult(airport=airport, score=round(final, 2), matched=matched))
         results.sort(key=lambda r: (r.score, r.airport.page_rank), reverse=True)
         return results
-
-    def _nearest_fallback(self, query: str, k: int) -> List[SearchResult]:
-        gaz = _cities.get_gazetteer()
-        if gaz is None:
-            return []
-        resolved = gaz.resolve(query)
-        if resolved is None:
-            return []
-        city, _city_score = resolved
-        near = self.nearest_airports(
-            city.latitude, city.longitude, k=k, country_code=city.country_code
-        )
-        label = f"{city.name}" + (f", {city.country_code}" if city.country_code else "")
-        out = []
-        for airport, dist, effective in near:
-            # Score on effective (border/water-aware) distance so the ordering and
-            # the score agree; distance_km still reports the real crow-flies value.
-            score = round(100.0 * math.exp(-effective / 500.0), 2)
-            out.append(
-                SearchResult(
-                    airport=airport, score=score, matched=label,
-                    via="nearest", distance_km=round(dist, 1),
-                )
-            )
-        return out
 
 
 # -- module-level lazy singleton -----------------------------------------
