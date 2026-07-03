@@ -255,11 +255,10 @@ class AirportIndex:
                 continue
             if t not in self._by_iata and t not in self._by_city_iata:
                 continue
-            if len(toks) == 1:
-                out.append(t)
-                continue
             rest = set(toks) - {t}
-            if rest & self._code_place.get(t, ()):  # the code's city/country is mentioned
+            # A lone code (or the same code repeated, e.g. "LHR (LHR)") is taken at
+            # face value; inside a phrase the rest must name the code's place.
+            if not rest or (rest & self._code_place.get(t, ())):
                 out.append(t)
         return out
 
@@ -330,6 +329,14 @@ class AirportIndex:
         for span in (3, 2, 1):
             if len(tokens) > span:  # must leave at least one remainder token
                 tail = " ".join(tokens[-span:])
+                # A trailing token that is a real airport/city code is a code, not a
+                # country, unless it's a very minor airport also usable as a country
+                # alias (mirrors the whole-query rule: "HND"=Haneda, but "USA"=US).
+                if span == 1:
+                    ai = self._by_iata.get(tail)
+                    major = ai is not None and (self.airports[ai].page_rank / self._max_page_rank) >= 0.02
+                    if major or tail in self._by_city_iata:
+                        continue
                 code = self._country_lookup.get(tail)
                 if code:
                     return code, " ".join(tokens[:-span])
