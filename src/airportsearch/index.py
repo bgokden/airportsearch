@@ -126,6 +126,12 @@ class AirportIndex:
                 aliases.add(f"{airport.name} {airport.country_name}")
             aliases.update(airport.alt_names)
             for alias in aliases:
+                # Skip bare 3-letter codes (metro/IATA like "CHI", "NYC") from the
+                # fuzzy index: the exact-code path already handles them, and as
+                # fuzzy aliases they substring-match longer queries ("chi" in
+                # "schipol") and hijack results. Real short names are kept.
+                if len(alias) == 3 and alias.isupper():
+                    continue
                 self._matcher.add(alias, idx)
 
         self._matcher.build()
@@ -222,7 +228,7 @@ class AirportIndex:
                 resolved is None
                 or self._has_exact_code(text)
                 or airport_cos > city_cos + 0.05        # name clearly out-matches the city
-                or (near and airport_cos >= 0.5)         # names an airport located in the city
+                or (near and airport_cos >= 0.4)         # names a real airport located in the city
                 or (tie_or_better and major)             # famous hub even if far from a same-named town
             )
             if trust_name:
