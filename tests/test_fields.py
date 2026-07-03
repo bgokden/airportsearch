@@ -136,3 +136,26 @@ def test_country_beats_minor_airport_code():
     # "USA" is IATA for tiny Concord Regional (NC) but the country is meant.
     hits = a.search("USA", k=3)
     assert all(h.via == "country" and h.airport.country_code == "US" for h in hits)
+
+
+# -- country name vs US state collision (Georgia, etc.) -------------------
+
+@pytest.mark.parametrize("query,expected", [
+    ("Atlanta Georgia", "ATL"),
+    ("Atlanta, Georgia", "ATL"),
+    ("Savannah Georgia", "SAV"),
+    ("Augusta Georgia", "AUG"),
+    ("Athens Georgia", "AHN"),   # Athens GA, not Athens Greece
+])
+def test_us_state_sharing_country_name(query, expected):
+    # "Georgia" is both a country (GE) and a US state; "<US city> Georgia" must
+    # resolve to the US airport, not fail inside the country of Georgia.
+    assert _top(query) == expected
+
+
+@pytest.mark.parametrize("query,expected", [
+    ("Tbilisi Georgia", "TBS"),  # the country reading still works when it fits
+    ("Batumi Georgia", "BUS"),
+])
+def test_country_georgia_still_resolves(query, expected):
+    assert _top(query) == expected

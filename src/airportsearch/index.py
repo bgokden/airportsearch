@@ -176,7 +176,15 @@ class AirportIndex:
         country, text = self._split_country(q)
         if country and not text:
             return self._top_in_country(country, k)  # "France", "Japan", "USA"
-        return self._search_text(text or q, k, score_cutoff, nearest_fallback, country)
+
+        results = self._search_text(text or q, k, score_cutoff, nearest_fallback, country)
+        if not results and country:
+            # The trailing token was a country name but nothing matches inside that
+            # country — it was probably a US state / region sharing the name (e.g.
+            # "Atlanta Georgia", where Georgia is the US state, not the country).
+            # Retry the whole query with no country restriction.
+            results = self._search_text(q, k, score_cutoff, nearest_fallback, None)
+        return results
 
     def _search_text(
         self, text: str, k: int, score_cutoff: float,
