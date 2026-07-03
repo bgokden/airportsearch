@@ -12,7 +12,10 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 from rapidfuzz import fuzz, process
 from unidecode import unidecode
 
-_ws_re = re.compile(r"\s+")
+# Any run of non-alphanumeric characters is a separator. This makes commas,
+# periods, slashes, hyphens and apostrophes behave like spaces, so "Paris,
+# France", "JFK, New York" and "O'Hare" tokenize the same as their spaced forms.
+_sep_re = re.compile(r"[^a-z0-9]+")
 
 # Trigram prefilter: shortlist aliases sharing the most trigrams with the query,
 # then only fuzzy-score those. Turns an O(N) scan into a small rerank.
@@ -21,10 +24,10 @@ _DF_CAP = 4000  # ignore ultra-common trigrams once we already have candidates
 
 
 def normalize(text: str) -> str:
-    """Fold to lowercase ASCII, collapse whitespace. Makes ``Zürich``==``zurich``==``苏黎世``-transliterated."""
+    """Fold to lowercase ASCII, punctuation to spaces. ``Zürich``==``zurich``, ``St.-Nazaire``==``st nazaire``."""
     if not text:
         return ""
-    return _ws_re.sub(" ", unidecode(text).lower()).strip()
+    return _sep_re.sub(" ", unidecode(text).lower()).strip()
 
 
 def trigrams(text: str) -> Set[str]:

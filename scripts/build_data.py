@@ -41,12 +41,12 @@ from typing import Dict, List, Optional, Set
 
 from unidecode import unidecode
 
-_ws_re = re.compile(r"\s+")
+_sep_re = re.compile(r"[^a-z0-9]+")
 
 
 def normalize(text: str) -> str:
-    """Match airportsearch._match.normalize (fold to lowercase ASCII)."""
-    return _ws_re.sub(" ", unidecode(text or "").lower()).strip()
+    """Match airportsearch._match.normalize (fold to lowercase ASCII, punct -> space)."""
+    return _sep_re.sub(" ", unidecode(text or "").lower()).strip()
 
 OURAIRPORTS_URL = "https://davidmegginson.github.io/ourairports-data/airports.csv"
 OPTD_URL = (

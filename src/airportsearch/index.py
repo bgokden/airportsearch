@@ -28,13 +28,11 @@ DEFAULT_SCORE_CUTOFF = 70.0
 # ``countries.json`` (built by scripts/build_data.py); nothing is hard-coded here.
 _COUNTRIES_FILE = "countries.json"
 
-# Common English words that collide with real IATA codes (THE=Teresina,
-# NEW=New Orleans Lakefront, FOR=Fortaleza...). They are almost never intended as
-# a code inside a phrase, so they are excluded from exact-code detection.
-_CODE_STOPWORDS = {
-    "the", "and", "for", "are", "new", "was", "you", "all", "one", "out", "our",
-    "her", "his", "has", "its", "not", "now", "old", "off", "can", "day", "way",
-    "may", "see", "two", "who", "why", "how", "let", "use", "far", "air",
+# Generic words dropped from a code's "place tokens" so they don't create false
+# consistency (every airport shares "airport"/"international").
+_GENERIC_NAME_TOKENS = {
+    "airport", "international", "intl", "regional", "municipal", "national",
+    "city", "field", "aerodrome", "airfield", "air", "base", "de", "the",
 }
 
 
@@ -73,6 +71,7 @@ class AirportIndex:
         self._by_country: Dict[str, List[int]] = {}   # ISO2 -> airport indices
         self._country_lookup: Dict[str, str] = {}      # normalized name/alias -> ISO2
         self._iso2: set = set()                        # valid ISO2 codes (lowercased)
+        self._code_place: Dict[str, set] = {}          # code -> tokens of its city/country/name
         self._matcher = TrigramMatcher()
 
         max_pr = 0.0
@@ -107,6 +106,17 @@ class AirportIndex:
                 self._iso2.add(cc.lower())
                 if airport.country_name:
                     self._country_lookup.setdefault(normalize(airport.country_name), cc)
+
+            # Tokens that describe where this airport's code points (its city and
+            # country), so "<code> <place>" can be validated as a real code + place.
+            place = set(normalize(airport.city_name or "").split())
+            place |= set(normalize(airport.country_name or "").split())
+            place |= set(normalize(airport.name).split()) - _GENERIC_NAME_TOKENS
+            if airport.country_code:
+                place.add(airport.country_code.lower())
+            self._code_place.setdefault(airport.iata.lower(), set()).update(place)
+            if airport.city_iata:
+                self._code_place.setdefault(airport.city_iata.lower(), set()).update(place)
 
             # Alias set: everything a user might type.
             aliases = {airport.name}
@@ -160,8 +170,8 @@ class AirportIndex:
         airports (``via="country"``).
         """
         q = normalize(query)
-        if not q:
-            return []
+        if not q or not any(c.isalpha() for c in q):
+            return []  # empty, punctuation-only, or digits-only
 
         country, text = self._split_country(q)
         if country and not text:
@@ -196,14 +206,16 @@ class AirportIndex:
         #   - the matched airport actually sits near the resolved city.
         if name_hits:
             top = name_hits[0].airport
-            tie_or_better = resolved is None or airport_cos >= resolved[1] - 0.01
+            city_cos = resolved[1] if resolved else 0.0
             near = resolved is not None and self._airport_near_city(top, resolved[0], 200.0)
             major = (top.page_rank / self._max_page_rank) >= 0.05
+            tie_or_better = resolved is None or airport_cos >= city_cos - 0.01
             trust_name = (
                 resolved is None
                 or self._has_exact_code(text)
-                or airport_cos > resolved[1] + 0.05      # name clearly out-matches the city
-                or (tie_or_better and (near or major))    # tie broken by locality or real traffic
+                or airport_cos > city_cos + 0.05        # name clearly out-matches the city
+                or (near and airport_cos >= 0.5)         # names an airport located in the city
+                or (tie_or_better and major)             # famous hub even if far from a same-named town
             )
             if trust_name:
                 return name_hits[:k]
@@ -215,18 +227,25 @@ class AirportIndex:
         return name_hits[:k]
 
     def _code_tokens(self, text: str) -> List[str]:
-        """Tokens that are explicit airport/city IATA codes.
+        """Tokens that are genuinely explicit airport/city IATA codes.
 
-        Words that collide with codes (the=THE, new=NEW) are ignored only in
-        multi-word queries; a lone "CAN"/"FOR" is taken as the code the user typed.
+        A lone 3-letter code is taken at face value ("CAN", "FOR"). Inside a phrase
+        a token counts as a code only if the rest of the query names that code's
+        place — so "JFK New York" seeds JFK (JFK is in New York) but "San Fransico"
+        does not seed SAN (San Diego), and "Los Angeles" does not seed LOS (Lagos).
         """
         toks = text.split()
-        multi = len(toks) > 1
         out = []
         for t in toks:
-            if len(t) == 3 and t.isalpha() and (t in self._by_iata or t in self._by_city_iata):
-                if multi and t in _CODE_STOPWORDS:
-                    continue
+            if len(t) != 3 or not t.isalpha():
+                continue
+            if t not in self._by_iata and t not in self._by_city_iata:
+                continue
+            if len(toks) == 1:
+                out.append(t)
+                continue
+            rest = set(toks) - {t}
+            if rest & self._code_place.get(t, ()):  # the code's city/country is mentioned
                 out.append(t)
         return out
 
@@ -340,6 +359,7 @@ class AirportIndex:
 
     def _name_search(self, q: str, k: int, score_cutoff: float) -> List[SearchResult]:
         best: Dict[int, Tuple[float, str]] = {}
+        exact: Dict[int, float] = {}  # idx -> fixed score for typed IATA codes
 
         def offer(idx: int, score: float, matched: str) -> None:
             cur = best.get(idx)
@@ -347,14 +367,18 @@ class AirportIndex:
                 best[idx] = (score, matched)
 
         # Exact code hits: any token that is a known airport or city IATA
-        # (so "JFK" and "JFK New York" both surface JFK as a strong signal).
+        # (so "JFK" and "JFK New York" both surface JFK as a strong signal). These
+        # bypass the popularity blend so a typed code can't be outranked by a fuzzy
+        # match on a busier airport ("FOR" -> Fortaleza, not Dallas-Fort Worth).
         for tok in set(self._code_tokens(q)):
             up = tok.upper()
             idx = self._by_iata.get(tok)
             if idx is not None:
                 offer(idx, 100.0, up)
+                exact[idx] = max(exact.get(idx, 0.0), 100.0)
             for cidx in self._by_city_iata.get(tok, []):
                 offer(cidx, 97.0, up)
+                exact[cidx] = max(exact.get(cidx, 0.0), 97.0)
 
         limit = max(k * 20, 100)
         for owner, score, display in self._matcher.query(q, limit=limit, score_cutoff=score_cutoff):
@@ -363,8 +387,11 @@ class AirportIndex:
         results = []
         for idx, (fuzzy_score, matched) in best.items():
             airport = self.airports[idx]
-            pop = 100.0 * (airport.page_rank / self._max_page_rank)
-            final = (1 - _POP_WEIGHT) * fuzzy_score + _POP_WEIGHT * pop
+            if idx in exact:
+                final = exact[idx]  # a typed code dominates
+            else:
+                pop = 100.0 * (airport.page_rank / self._max_page_rank)
+                final = (1 - _POP_WEIGHT) * fuzzy_score + _POP_WEIGHT * pop
             if final < score_cutoff:
                 continue
             results.append(SearchResult(airport=airport, score=round(final, 2), matched=matched))

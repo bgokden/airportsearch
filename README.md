@@ -11,6 +11,8 @@ airports, scored and ranked.
 - 🧩 **Any field, any combination** — airport name, IATA, city, or country, and
   mixes of them: `LHR`, `Heathrow`, `London`, `Paris France`, `airports in Japan`,
   `JFK New York`. A bare country returns its busiest airports (`via="country"`).
+  Separators are flexible — commas, spaces, or punctuation all work
+  (`Paris, France` == `Paris France`, `JFK, New York` == `JFK New York`).
 - 🏙️ **City *and* airport IATA codes** — `NYC` → `JFK` / `EWR` / `LGA`,
   each tagged with its metropolitan `city_iata`.
 - ✈️ **Commercial only** — airports with scheduled airline service; military
