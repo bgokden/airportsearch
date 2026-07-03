@@ -1,5 +1,9 @@
 # airportsearch
 
+[![CI](https://github.com/bgokden/airportsearch/actions/workflows/ci.yml/badge.svg)](https://github.com/bgokden/airportsearch/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.9%E2%80%933.13-blue)](https://pypi.org/project/airportsearch/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 Fast, multilingual **fuzzy search for commercial airports**. Give it any text — an
 airport name, an alternate or foreign-language name, an IATA code, a city, a city
 code, or a partial/misspelled combination — and get back the best-matching
