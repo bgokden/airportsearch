@@ -257,19 +257,27 @@ def build_countries(rows, country_alt: Dict[int, List[str]]) -> int:
     """
     mapping: Dict[str, str] = {}
 
-    def put(alias: str, iso2: str) -> None:
+    def soft(alias: str, iso2: str) -> None:  # only if the key is still free
         key = normalize(alias)
         if key and key not in mapping:
             mapping[key] = iso2
 
+    def hard(alias: str, iso2: str) -> None:  # authoritative, overrides
+        key = normalize(alias)
+        if key:
+            mapping[key] = iso2
+
+    # Priority (low -> high): alternate names, then official names, then ISO2 codes,
+    # so a code like "ru" always maps to RU even if some country's alt name is "ru".
+    # ISO3 codes are intentionally omitted (they collide with IATA: FRA, CAN, ...).
     for iso2, iso3, name, gid in rows:
-        put(name, iso2)
-        put(iso2, iso2)
-        # NB: ISO3 codes are intentionally omitted — they are 3 letters and collide
-        # with IATA airport codes (FRA=Frankfurt vs France, CAN=Guangzhou vs Canada).
         if gid.isdigit():
             for alt in country_alt.get(int(gid), []):
-                put(alt, iso2)
+                soft(alt, iso2)
+    for iso2, iso3, name, gid in rows:
+        hard(name, iso2)
+    for iso2, iso3, name, gid in rows:
+        hard(iso2, iso2)
 
     with open(COUNTRIES_OUT, "w", encoding="utf-8") as fh:
         json.dump(mapping, fh, ensure_ascii=False, sort_keys=True)

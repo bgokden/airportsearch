@@ -6,7 +6,7 @@ import json
 import math
 from functools import lru_cache
 from importlib import resources
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 from . import cities as _cities
 from ._match import TrigramMatcher, normalize, trigrams
@@ -161,6 +161,7 @@ class AirportIndex:
         k: int = 5,
         score_cutoff: float = DEFAULT_SCORE_CUTOFF,
         nearest_fallback: bool = True,
+        exclude_countries: Optional[Iterable[str]] = None,
     ) -> List[SearchResult]:
         """Return up to ``k`` airports best matching ``query``, ordered by score desc.
 
@@ -174,29 +175,48 @@ class AirportIndex:
         nearest logical airports are returned (``via="nearest"``), respecting
         country borders and water. A bare country returns that country's busiest
         airports (``via="country"``).
+
+        ``exclude_countries`` drops airports in the given countries from every
+        result path. Each entry may be an ISO 3166-1 alpha-2 code or a country
+        name/alias in any supported language (e.g. ``["RU", "Belarus", "İran"]``).
         """
         q = normalize(query)
         if not q or not any(c.isalpha() for c in q):
             return []  # empty, punctuation-only, or digits-only
 
+        exclude = self._resolve_country_set(exclude_countries)
         country, text = self._split_country(q)
         if country and not text:
-            return self._top_in_country(country, k)  # "France", "Japan", "USA"
+            return self._top_in_country(country, k, exclude)  # "France", "Japan", "USA"
 
-        results = self._search_text(text or q, k, score_cutoff, nearest_fallback, country)
-        if not results and country:
+        results = self._search_text(text or q, k, score_cutoff, nearest_fallback, country, exclude)
+        if not results and country and country not in exclude:
             # The trailing token was a country name but nothing matches inside that
             # country — it was probably a US state / region sharing the name (e.g.
             # "Atlanta Georgia", where Georgia is the US state, not the country).
             # Retry the whole query with no country restriction.
-            results = self._search_text(q, k, score_cutoff, nearest_fallback, None)
+            results = self._search_text(q, k, score_cutoff, nearest_fallback, None, exclude)
         return results
+
+    def _resolve_country_set(self, values: Optional[Iterable[str]]) -> frozenset:
+        """Normalize a mix of ISO2 codes and country names/aliases to ISO2 codes."""
+        out = set()
+        for v in values or ():
+            v = normalize(v)
+            if not v:
+                continue
+            code = self._country_lookup.get(v)
+            if code:
+                out.add(code)
+            elif len(v) == 2:  # a 2-letter code, known or not
+                out.add(v.upper())
+        return frozenset(out)
 
     def _search_text(
         self, text: str, k: int, score_cutoff: float,
-        nearest_fallback: bool, country: Optional[str],
+        nearest_fallback: bool, country: Optional[str], exclude: frozenset = frozenset(),
     ) -> List[SearchResult]:
-        name_hits = self._name_search(text, k, score_cutoff)
+        name_hits = self._name_search(text, k, score_cutoff, exclude)
         # When a country is specified, restrict name hits to it (so "Bath UK"
         # cannot return "Bata" in Equatorial Guinea).
         if country:
@@ -235,7 +255,7 @@ class AirportIndex:
                 return name_hits[:k]
 
         if resolved is not None:
-            near = self._nearest_results(resolved[0], k, country)
+            near = self._nearest_results(resolved[0], k, country, exclude)
             if near:
                 return near
         return name_hits[:k]
@@ -273,11 +293,12 @@ class AirportIndex:
             city.latitude, city.longitude, airport.latitude, airport.longitude
         ) <= within_km
 
-    def _nearest_results(self, city: City, k: int, country: Optional[str]) -> List[SearchResult]:
+    def _nearest_results(self, city: City, k: int, country: Optional[str],
+                         exclude: frozenset = frozenset()) -> List[SearchResult]:
         near = self.nearest_airports(
             city.latitude, city.longitude, k=k,
             country_code=country or city.country_code,
-            restrict_country=country,
+            restrict_country=country, exclude=exclude,
         )
         label = f"{city.name}" + (f", {city.country_code}" if city.country_code else "")
         out = []
@@ -289,7 +310,10 @@ class AirportIndex:
             ))
         return out
 
-    def _top_in_country(self, country: str, k: int) -> List[SearchResult]:
+    def _top_in_country(self, country: str, k: int,
+                        exclude: frozenset = frozenset()) -> List[SearchResult]:
+        if country in exclude:
+            return []
         idxs = self._by_country.get(country, [])[:k]  # pre-sorted by page_rank
         if not idxs:
             return []
@@ -345,7 +369,7 @@ class AirportIndex:
     def nearest_airports(
         self, latitude: float, longitude: float, k: int = 5,
         country_code: Optional[str] = None, max_km: float = _MAX_NEAREST_KM,
-        restrict_country: Optional[str] = None,
+        restrict_country: Optional[str] = None, exclude: frozenset = frozenset(),
     ) -> List[Tuple[Airport, float, float]]:
         """The ``k`` nearest commercial airports to a point, border/water-aware.
 
@@ -361,6 +385,8 @@ class AirportIndex:
             if ap.latitude is None or ap.longitude is None:
                 continue
             if restrict_country and ap.country_code != restrict_country:
+                continue
+            if ap.country_code in exclude:
                 continue
             real = haversine_km(latitude, longitude, ap.latitude, ap.longitude)
             if real > max_km * 2:  # cheap prefilter; effective can only grow
@@ -378,7 +404,8 @@ class AirportIndex:
 
     # -- internals --------------------------------------------------------
 
-    def _name_search(self, q: str, k: int, score_cutoff: float) -> List[SearchResult]:
+    def _name_search(self, q: str, k: int, score_cutoff: float,
+                     exclude: frozenset = frozenset()) -> List[SearchResult]:
         best: Dict[int, Tuple[float, str]] = {}
         exact: Dict[int, float] = {}  # idx -> fixed score for typed IATA codes
 
@@ -408,6 +435,8 @@ class AirportIndex:
         results = []
         for idx, (fuzzy_score, matched) in best.items():
             airport = self.airports[idx]
+            if airport.country_code in exclude:
+                continue
             if idx in exact:
                 final = exact[idx]  # a typed code dominates
             else:
@@ -437,9 +466,10 @@ def get_index() -> AirportIndex:
 
 def search(
     query: str, k: int = 5, score_cutoff: float = DEFAULT_SCORE_CUTOFF,
-    nearest_fallback: bool = True,
+    nearest_fallback: bool = True, exclude_countries: Optional[Iterable[str]] = None,
 ) -> List[SearchResult]:
     """Convenience wrapper around :meth:`AirportIndex.search` using the shared index."""
     return get_index().search(
-        query, k=k, score_cutoff=score_cutoff, nearest_fallback=nearest_fallback
+        query, k=k, score_cutoff=score_cutoff, nearest_fallback=nearest_fallback,
+        exclude_countries=exclude_countries,
     )

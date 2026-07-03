@@ -1,8 +1,25 @@
 # airportsearch
 
+<!-- build & quality -->
 [![CI](https://github.com/bgokden/airportsearch/actions/workflows/ci.yml/badge.svg)](https://github.com/bgokden/airportsearch/actions/workflows/ci.yml)
+[![Publish](https://github.com/bgokden/airportsearch/actions/workflows/publish.yml/badge.svg)](https://github.com/bgokden/airportsearch/actions/workflows/publish.yml)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![License: MIT](https://img.shields.io/github/license/bgokden/airportsearch)](LICENSE)
+
+<!-- package -->
+[![PyPI](https://img.shields.io/pypi/v/airportsearch.svg)](https://pypi.org/project/airportsearch/)
 [![Python](https://img.shields.io/badge/python-3.9%E2%80%933.13-blue)](https://pypi.org/project/airportsearch/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Wheel](https://img.shields.io/pypi/wheel/airportsearch.svg)](https://pypi.org/project/airportsearch/)
+[![Downloads](https://img.shields.io/pypi/dm/airportsearch.svg)](https://pypi.org/project/airportsearch/)
+
+<!-- repo & dataset -->
+[![Last commit](https://img.shields.io/github/last-commit/bgokden/airportsearch)](https://github.com/bgokden/airportsearch/commits/main)
+[![Issues](https://img.shields.io/github/issues/bgokden/airportsearch)](https://github.com/bgokden/airportsearch/issues)
+[![Stars](https://img.shields.io/github/stars/bgokden/airportsearch?style=flat)](https://github.com/bgokden/airportsearch/stargazers)
+![Airports](https://img.shields.io/badge/airports-5%2C025-0aa)
+![Cities](https://img.shields.io/badge/cities-33%2C934-0aa)
+![Countries](https://img.shields.io/badge/countries-235-0aa)
+![Tests](https://img.shields.io/badge/tests-266%20passing-2ea44f)
 
 Fast, multilingual **fuzzy search for commercial airports**. Give it any text — an
 airport name, an alternate or foreign-language name, an IATA code, a city, a city
@@ -73,6 +90,14 @@ airportsearch.search("JFK New York")    # IATA + city    -> JFK
 airportsearch.search("Deutschland")     # multilingual country -> Frankfurt, Munich ...
 ```
 
+Exclude countries (ISO2 codes or names, in any language) from every result path:
+
+```python
+airportsearch.search("London", exclude_countries=["GB"])   # -> London, Ontario (CA) ...
+airportsearch.search("Tijuana", exclude_countries=["MX"])  # nearest, but US side only
+airportsearch.search("Moscow", exclude_countries=["Russia"])
+```
+
 Nearest-airport fallback for a city with no airport of its own:
 
 ```python
@@ -96,6 +121,10 @@ $ airportsearch "londres" -k 3
   94.8  LHR/LON  London Heathrow Airport  —  London (GB)
   89.3  LGW/LON  London Gatwick Airport  —  London (GB)
   87.1  LTN/LON  Luton Airport  —  London (GB)
+
+$ airportsearch "London" --exclude GB -k 2      # exclude countries (codes or names)
+  85.2  YXU      London International Airport  —  London (CA)
+  85.2  LOZ      London-Corbin Airport  —  London (US)
 ```
 
 ## How matching works

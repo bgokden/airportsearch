@@ -14,12 +14,15 @@ def main(argv=None) -> int:
     )
     parser.add_argument("query", nargs="+", help="Search text (name / alias / IATA / city).")
     parser.add_argument("-k", type=int, default=5, help="Number of results (default: 5).")
-    parser.add_argument("--cutoff", type=float, default=40.0, help="Minimum fuzzy score (default: 40).")
+    parser.add_argument("--cutoff", type=float, default=70.0, help="Minimum score (default: 70).")
+    parser.add_argument("--exclude", default="", metavar="CC[,CC...]",
+                        help="Exclude countries (ISO2 codes or names, comma-separated).")
     parser.add_argument("--version", action="version", version=f"airportsearch {__version__}")
     args = parser.parse_args(argv)
 
     query = " ".join(args.query)
-    results = search(query, k=args.k, score_cutoff=args.cutoff)
+    exclude = [c for c in args.exclude.split(",") if c.strip()] or None
+    results = search(query, k=args.k, score_cutoff=args.cutoff, exclude_countries=exclude)
     if not results:
         print(f"No airports found for {query!r}", file=sys.stderr)
         return 1
