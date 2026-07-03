@@ -14,9 +14,12 @@ airports, scored and ranked.
   bases, closed fields, and GA strips are filtered out.
 - 📊 **Popularity-aware ranking** — busier hubs float to the top via
   OpenTravelData page-rank.
+- 📍 **Nearest-airport fallback** — a query with no airport of its own (e.g.
+  `Utrecht`) resolves to the city and returns the nearest *reachable* airports,
+  respecting **national borders and water** (no "closest across the bay").
 - ⚡ **Fast** — a trigram prefilter keeps queries at ~5 ms even over ~160k aliases.
-- 📦 **Zero network at runtime** — a compact dataset (~1.5 MB, ~5,000 airports)
-  ships in the wheel.
+- 📦 **Zero network at runtime** — a compact dataset (~2.8 MB, ~5,000 airports +
+  city gazetteer + land mask) ships in the wheel.
 
 ## Install
 
@@ -39,12 +42,24 @@ for hit in airportsearch.search("Frankfurt", k=3):
 Each result is a `SearchResult`:
 
 ```python
-hit.score          # blended relevance 0..100 (fuzzy similarity + popularity)
+hit.score          # relevance 0..100 (name match+popularity, or proximity)
 hit.iata           # shortcut for hit.airport.iata
-hit.matched        # the alias/name that produced the match
+hit.matched        # the alias that matched, or the resolved city (for nearest)
+hit.via            # "name" (matched a name) or "nearest" (geographic fallback)
+hit.distance_km    # city->airport distance for via="nearest" hits, else None
 hit.airport        # Airport dataclass:
 #   iata, icao, name, city_iata, city_name, country_code, country_name,
 #   region, latitude, longitude, type, page_rank, geoname_id, source, alt_names
+```
+
+Nearest-airport fallback for a city with no airport of its own:
+
+```python
+for hit in airportsearch.search("Utrecht", k=3):
+    print(hit.via, hit.iata, hit.airport.name, f"{hit.distance_km:.0f} km")
+# nearest AMS Amsterdam Airport Schiphol 34 km
+# nearest RTM Rotterdam The Hague Airport 49 km
+# nearest EIN Eindhoven Airport 73 km
 ```
 
 Look up a known code directly:
@@ -66,11 +81,42 @@ $ airportsearch "londres" -k 3
 
 1. Exact IATA hits (airport code, then city/metropolitan code) are seeded as
    strong signals.
-2. A [RapidFuzz](https://github.com/rapidfuzz/RapidFuzz) pass scores the query
-   against every name/alias, after Unicode-folding both sides
-   (`Zürich` == `zurich`) so non-Latin scripts transliterate and match.
+2. A trigram inverted index shortlists candidate aliases, then
+   [RapidFuzz](https://github.com/rapidfuzz/RapidFuzz) scores them, after
+   Unicode-folding both sides (`Zürich` == `zurich`) so non-Latin scripts
+   transliterate and match.
 3. The best textual score per airport is blended with its popularity
    (`page_rank`) and the top `k` are returned.
+4. **If nothing matches confidently** (the top hit's alias isn't trigram-similar
+   enough to the query — distinguishing a real name match from a nickname
+   coincidence), the query is resolved to a city and the **nearest logical
+   airports** are returned (`via="nearest"`, with `distance_km`).
+
+### Nearest-airport ("logical") ranking
+
+Naive great-circle nearest is wrong when the closest airport is across a border
+or a body of water. Airports are ranked by an **effective distance**:
+
+```
+effective = crow_flies_km × border_factor × water_factor
+```
+
+- `border_factor` penalizes airports in a different country, so a city is served
+  by its own country's airports unless a foreign one is dramatically closer.
+- `water_factor` samples the straight path against a bundled land/water bitmap and
+  penalizes sea/bay crossings (you can't drive across water).
+
+So `Utrecht` → `AMS`/`RTM`/`EIN` (Netherlands), `Tijuana` → `TIJ` (Mexico, not the
+closer US fields across the border), and `Berkeley` → East-Bay airports rather
+than `SFO` across the bay.
+
+### Why not plain fuzzy search?
+
+Plain fuzzy scoring (`WRatio`) is *length-blind*: it scores short strings against
+unrelated long ones highly (`ann` ⊂ `cannes`, `utrecth` ~ `recife`). City
+resolution therefore adds a **length-aware trigram-cosine gate** so only genuine
+name overlaps resolve, while airport-name matching keeps full fuzzy for partial
+multi-word queries.
 
 ## Data sources
 
@@ -81,7 +127,8 @@ The bundled dataset (~5,000 airports) is built by
 | --- | --- | --- |
 | [OpenTravelData](https://github.com/opentraveldata/opentraveldata) | City + airport IATA codes, page-rank, geoname ids, alternate names | Open (attribution) |
 | [OurAirports](https://ourairports.com/data/) | Commercial filter (facility type + scheduled service), coordinates | Public domain |
-| [GeoNames](https://www.geonames.org/) | Deep multilingual alternate names (joined by geoname id) | CC BY 4.0 |
+| [GeoNames](https://www.geonames.org/) | Deep multilingual alternate names, city gazetteer (`cities15000`) | CC BY 4.0 |
+| [global-land-mask](https://pypi.org/project/global-land-mask/) | Coarse land/water bitmap (built once, ~12 KB) for water-aware nearest airport | build-time only |
 
 Each record carries a `source` (`ourairports` / `optd` / `both`) so you can see
 which dataset vouched for it.
@@ -89,9 +136,14 @@ which dataset vouched for it.
 ### Rebuilding the dataset
 
 ```bash
-python scripts/build_data.py                    # broad + GeoNames (what ships)
+# The water-aware land mask needs two build-time-only deps:
+pip install -e ".[build-data]"
+
+python scripts/build_data.py                    # broad + GeoNames + cities + land mask
 python scripts/build_data.py --coverage strict  # OurAirports scheduled-service only
 python scripts/build_data.py --no-geonames      # skip the ~200 MB GeoNames download
+python scripts/build_data.py --cities none      # skip the nearest-airport gazetteer
+python scripts/build_data.py --no-landmask      # nearest airport stays country-aware only
 python scripts/build_data.py --refresh          # force re-download of all sources
 ```
 

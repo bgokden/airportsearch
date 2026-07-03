@@ -30,6 +30,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7", "build", "twine"]
+# Only needed to (re)generate the bundled water-aware land mask.
+build-data = ["numpy", "global-land-mask"]
 
 [project.urls]
 Homepage = "https://github.com/bgokden/airportsearch"
@@ -48,6 +50,8 @@ packages = ["src/airportsearch"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "src/airportsearch/data/airports.jsonl.gz" = "airportsearch/data/airports.jsonl.gz"
+"src/airportsearch/data/cities.jsonl.gz" = "airportsearch/data/cities.jsonl.gz"
+"src/airportsearch/data/landmask.bin.gz" = "airportsearch/data/landmask.bin.gz"
 
 [tool.hatch.build.targets.sdist]
 include = ["src/airportsearch", "scripts", "tests", "README.md", "LICENSE"]

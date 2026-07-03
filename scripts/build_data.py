@@ -44,10 +44,20 @@ OPTD_URL = (
     "master/opentraveldata/optd_por_public.csv"
 )
 GEONAMES_URL = "https://download.geonames.org/export/dump/alternateNamesV2.zip"
+CITIES_URL = "https://download.geonames.org/export/dump/{}.zip"
 
 ROOT = Path(__file__).resolve().parents[1]
 CACHE = ROOT / ".build_cache"
-OUT = ROOT / "src" / "airportsearch" / "data" / "airports.jsonl.gz"
+DATA_DIR = ROOT / "src" / "airportsearch" / "data"
+OUT = DATA_DIR / "airports.jsonl.gz"
+CITIES_OUT = DATA_DIR / "cities.jsonl.gz"
+LANDMASK_OUT = DATA_DIR / "landmask.bin.gz"
+
+# Land mask grid (must match airportsearch/geo.py).
+LM_RES = 0.25
+LM_NLAT = int(180 / LM_RES)
+LM_NLON = int(360 / LM_RES)
+MAX_CITY_ALT_NAMES = 6
 
 COMMERCIAL_TYPES = {"large_airport", "medium_airport", "small_airport"}
 
@@ -195,8 +205,65 @@ def load_geonames_altnames(path: Path, wanted: Set[int]) -> Dict[int, List[str]]
     return result
 
 
+def build_cities(cities_file: str, refresh: bool) -> int:
+    """Build the city gazetteer from a GeoNames cities dump (e.g. cities15000)."""
+    path = download(CITIES_URL.format(cities_file), CACHE / f"{cities_file}.zip", refresh)
+    written = 0
+    with zipfile.ZipFile(path) as zf:
+        member = next(n for n in zf.namelist() if n.endswith(".txt"))
+        with zf.open(member) as raw, gzip.open(CITIES_OUT, "wt", encoding="utf-8") as gz:
+            for line in io.TextIOWrapper(raw, encoding="utf-8"):
+                c = line.rstrip("\n").split("\t")
+                if len(c) < 15:
+                    continue
+                lat, lon = _num(c[4]), _num(c[5])
+                if lat is None or lon is None:
+                    continue
+                alts = [a.strip() for a in c[3].split(",") if a.strip()][:MAX_CITY_ALT_NAMES]
+                rec = {
+                    "n": c[1].strip(),
+                    "a": c[2].strip() or None,
+                    "co": c[8].strip() or None,
+                    "la": round(lat, 5),
+                    "lo": round(lon, 5),
+                    "pop": int(c[14]) if c[14].isdigit() else 0,
+                    "al": alts,
+                }
+                rec = {k: v for k, v in rec.items() if v not in (None, "", [])}
+                gz.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                written += 1
+    print(f"  city gazetteer: {written} cities -> {CITIES_OUT.name} "
+          f"({CITIES_OUT.stat().st_size/1e6:.1f} MB)")
+    return written
+
+
+def build_landmask() -> bool:
+    """Generate a coarse packed land/water bitmap using global-land-mask + numpy.
+
+    Build-time only; if the deps are missing we skip it and the runtime falls
+    back to country-aware (but not water-aware) nearest-airport ranking.
+    """
+    try:
+        import numpy as np
+        from global_land_mask import globe
+    except ImportError:
+        print("  land mask SKIPPED (pip install numpy global-land-mask to enable water-awareness)")
+        return False
+    lats = 90.0 - (np.arange(LM_NLAT) + 0.5) * LM_RES
+    lons = -180.0 + (np.arange(LM_NLON) + 0.5) * LM_RES
+    lon_grid, lat_grid = np.meshgrid(lons, lats)
+    land = globe.is_land(lat_grid, lon_grid)  # (NLAT, NLON) bool, row 0 = north
+    packed = np.packbits(land.astype(np.uint8).ravel())  # MSB-first
+    with gzip.open(LANDMASK_OUT, "wb") as gz:
+        gz.write(packed.tobytes())
+    print(f"  land mask: {LM_NLAT}x{LM_NLON} grid -> {LANDMASK_OUT.name} "
+          f"({LANDMASK_OUT.stat().st_size/1e3:.0f} KB)")
+    return True
+
+
 def build(coverage: str = "broad", geonames: bool = True,
-          min_page_rank: float = 0.0, refresh: bool = False) -> int:
+          min_page_rank: float = 0.0, refresh: bool = False,
+          cities_file: str = "cities15000", landmask: bool = True) -> int:
     print("Downloading sources...")
     oa_path = download(OURAIRPORTS_URL, CACHE / "ourairports.csv", refresh)
     optd_path = download(OPTD_URL, CACHE / "optd_por_public.csv", refresh)
@@ -304,7 +371,16 @@ def build(coverage: str = "broad", geonames: bool = True,
             written += 1
 
     size_mb = OUT.stat().st_size / 1e6
-    print(f"Done: {written} airports -> {OUT.relative_to(ROOT)} ({size_mb:.1f} MB)")
+    print(f"  airports: {written} -> {OUT.name} ({size_mb:.1f} MB)")
+
+    if cities_file != "none":
+        print("Building city gazetteer (for nearest-airport fallback)...")
+        build_cities(cities_file, refresh)
+    if landmask:
+        print("Building land/water mask (for water-aware nearest airport)...")
+        build_landmask()
+
+    print("Done.")
     return written
 
 
@@ -321,11 +397,20 @@ if __name__ == "__main__":
                     help="Skip the GeoNames download/enrichment step.")
     ap.add_argument("--min-page-rank", type=float, default=0.0,
                     help="Broad-mode inclusion threshold on OPTD page_rank (default: 0).")
+    ap.add_argument("--cities", default="cities15000",
+                    help="GeoNames cities dump for the nearest-airport gazetteer "
+                         "(cities15000/cities5000/cities1000/cities500), or 'none'.")
+    lm = ap.add_mutually_exclusive_group()
+    lm.add_argument("--landmask", dest="landmask", action="store_true", default=True,
+                    help="Build the land/water mask for water-aware nearest airport (default).")
+    lm.add_argument("--no-landmask", dest="landmask", action="store_false",
+                    help="Skip the land mask (nearest airport stays country-aware only).")
     ap.add_argument("--refresh", action="store_true", help="Force re-download of sources.")
     args = ap.parse_args()
     try:
         build(coverage=args.coverage, geonames=args.geonames,
-              min_page_rank=args.min_page_rank, refresh=args.refresh)
+              min_page_rank=args.min_page_rank, refresh=args.refresh,
+              cities_file=args.cities, landmask=args.landmask)
     except Exception as exc:  # pragma: no cover
         print(f"Build failed: {exc}", file=sys.stderr)
         raise

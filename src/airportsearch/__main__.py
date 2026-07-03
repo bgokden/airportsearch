@@ -24,11 +24,14 @@ def main(argv=None) -> int:
         print(f"No airports found for {query!r}", file=sys.stderr)
         return 1
 
+    if results[0].via == "nearest":
+        print(f"No airport named {query!r}; nearest to {results[0].matched}:")
     for r in results:
         a = r.airport
-        city = f"{a.city_name} " if a.city_name else ""
         city_code = f"/{a.city_iata}" if a.city_iata and a.city_iata != a.iata else ""
-        print(f"{r.score:6.1f}  {a.iata}{city_code:>5}  {a.name}  —  {city}({a.country_code})")
+        tail = f"  [{r.distance_km:.0f} km]" if r.distance_km is not None else ""
+        city = f"{a.city_name} " if a.city_name else ""
+        print(f"{r.score:6.1f}  {a.iata}{city_code:>5}  {a.name}  —  {city}({a.country_code}){tail}")
     return 0
 
 

@@ -13,14 +13,19 @@ service filtering). See ``scripts/build_data.py``.
 """
 from __future__ import annotations
 
-from .index import AirportIndex, get_index, normalize, search
-from .models import Airport, SearchResult
+from ._match import normalize
+from .cities import CityGazetteer, get_gazetteer
+from .index import AirportIndex, get_index, search
+from .models import Airport, City, SearchResult
 
 __all__ = [
     "search",
     "get_index",
+    "get_gazetteer",
     "AirportIndex",
+    "CityGazetteer",
     "Airport",
+    "City",
     "SearchResult",
     "normalize",
 ]

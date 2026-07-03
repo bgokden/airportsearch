@@ -48,18 +48,45 @@ class Airport:
 
 
 @dataclass(frozen=True)
+class City:
+    """A populated place from the gazetteer, used to resolve airport-less queries.
+
+    Attributes:
+        name: Primary city name.
+        country_code: ISO 3166-1 alpha-2 country code.
+        latitude / longitude: Decimal degrees.
+        population: Population (used to disambiguate same-named cities).
+    """
+
+    name: str
+    country_code: Optional[str]
+    latitude: float
+    longitude: float
+    population: int = 0
+
+
+@dataclass(frozen=True)
 class SearchResult:
     """A scored search hit.
 
     Attributes:
         airport: The matched :class:`Airport`.
-        score: Blended relevance score in ``[0, 100]`` (higher is better).
-        matched: The alias / field value that produced the best textual match.
+        score: Relevance score in ``[0, 100]`` (higher is better). For ``via="name"``
+            this is textual-match + popularity; for ``via="nearest"`` it reflects
+            proximity to the resolved city.
+        matched: The alias/field value that produced the match (``via="name"``), or
+            the resolved city description (``via="nearest"``).
+        via: How the hit was found — ``"name"`` (matched airport/city name) or
+            ``"nearest"`` (geographic fallback to the nearest logical airport).
+        distance_km: Great-circle distance from the resolved city to the airport,
+            for ``via="nearest"`` hits (``None`` otherwise).
     """
 
     airport: Airport
     score: float
     matched: str
+    via: str = "name"
+    distance_km: Optional[float] = None
 
     @property
     def iata(self) -> str:
@@ -67,7 +94,8 @@ class SearchResult:
 
     def __repr__(self) -> str:  # pragma: no cover - cosmetic
         a = self.airport
+        extra = f", {self.distance_km:.0f}km" if self.distance_km is not None else ""
         return (
-            f"SearchResult(score={self.score:.1f}, iata={a.iata!r}, "
-            f"name={a.name!r}, city={a.city_name!r}, country={a.country_code!r})"
+            f"SearchResult(score={self.score:.1f}, iata={a.iata!r}, name={a.name!r}, "
+            f"city={a.city_name!r}, country={a.country_code!r}, via={self.via!r}{extra})"
         )
