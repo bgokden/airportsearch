@@ -76,6 +76,15 @@ hit.distance_km    # city->airport distance for via="nearest" hits, else None
 hit.airport        # Airport dataclass:
 #   iata, icao, name, city_iata, city_name, country_code, country_name,
 #   region, latitude, longitude, type, page_rank, geoname_id, source, alt_names
+hit.airport.coordinates   # (latitude, longitude) tuple, or None
+```
+
+Every airport carries its coordinates:
+
+```python
+ap = airportsearch.search("Sydney", k=1)[0].airport
+print(ap.latitude, ap.longitude)   # -33.9461 151.1772
+print(ap.coordinates)              # (-33.9461, 151.1772)
 ```
 
 Fielded queries — name, IATA, city, country, and combinations:

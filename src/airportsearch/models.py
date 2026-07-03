@@ -46,6 +46,13 @@ class Airport:
     source: Optional[str] = None
     alt_names: List[str] = field(default_factory=list)
 
+    @property
+    def coordinates(self) -> Optional[tuple]:
+        """``(latitude, longitude)`` in decimal degrees, or ``None`` if unknown."""
+        if self.latitude is None or self.longitude is None:
+            return None
+        return (self.latitude, self.longitude)
+
 
 @dataclass(frozen=True)
 class City:

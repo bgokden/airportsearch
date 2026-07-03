@@ -17,6 +17,7 @@ def main(argv=None) -> int:
     parser.add_argument("--cutoff", type=float, default=70.0, help="Minimum score (default: 70).")
     parser.add_argument("--exclude", default="", metavar="CC[,CC...]",
                         help="Exclude countries (ISO2 codes or names, comma-separated).")
+    parser.add_argument("--coords", action="store_true", help="Show latitude/longitude.")
     parser.add_argument("--version", action="version", version=f"airportsearch {__version__}")
     args = parser.parse_args(argv)
 
@@ -33,6 +34,8 @@ def main(argv=None) -> int:
         a = r.airport
         city_code = f"/{a.city_iata}" if a.city_iata and a.city_iata != a.iata else ""
         tail = f"  [{r.distance_km:.0f} km]" if r.distance_km is not None else ""
+        if args.coords and a.coordinates:
+            tail += f"  ({a.latitude:.4f}, {a.longitude:.4f})"
         city = f"{a.city_name} " if a.city_name else ""
         print(f"{r.score:6.1f}  {a.iata}{city_code:>5}  {a.name}  —  {city}({a.country_code}){tail}")
     return 0

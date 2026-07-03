@@ -26,6 +26,18 @@ def test_coordinates_in_range():
             assert -180 <= ap.longitude <= 180
 
 
+def test_every_airport_has_coordinates():
+    for ap in a.get_index().airports:
+        assert ap.latitude is not None and ap.longitude is not None
+        assert ap.coordinates == (ap.latitude, ap.longitude)
+
+
+def test_result_exposes_coordinates():
+    top = a.search("Tokyo", k=1)[0].airport
+    lat, lon = top.coordinates
+    assert 35 < lat < 36 and 139 < lon < 141  # Haneda area
+
+
 def test_country_codes_are_two_letters():
     for ap in a.get_index().airports:
         if ap.country_code:
