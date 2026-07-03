@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "airportsearch"
+version = "0.1.0"
+description = "Fast, multilingual fuzzy search for commercial airports by name, alias, IATA code, city or country."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Berk Gokden", email = "berkgokden@gmail.com" }]
+keywords = ["airport", "iata", "icao", "search", "fuzzy", "travel", "geocoding", "multilingual"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: GIS",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "rapidfuzz>=3.0",
+    "unidecode>=1.3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "build", "twine"]
+
+[project.urls]
+Homepage = "https://github.com/bgokden/airportsearch"
+Repository = "https://github.com/bgokden/airportsearch"
+Issues = "https://github.com/bgokden/airportsearch/issues"
+
+[project.scripts]
+airportsearch = "airportsearch.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/airportsearch"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/airportsearch/data/airports.jsonl.gz" = "airportsearch/data/airports.jsonl.gz"
+
+[tool.hatch.build.targets.sdist]
+include = ["src/airportsearch", "scripts", "tests", "README.md", "LICENSE"]
