@@ -39,6 +39,10 @@ Issues = "https://github.com/bgokden/airportsearch/issues"
 [project.scripts]
 airportsearch = "airportsearch.__main__:main"
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/airportsearch"]
 
