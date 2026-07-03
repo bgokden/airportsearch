@@ -21,8 +21,12 @@ class Airport:
         region: Top-level administrative subdivision (state / province), if known.
         latitude: Decimal degrees, north positive.
         longitude: Decimal degrees, east positive.
-        type: OurAirports facility type (``large_airport`` / ``medium_airport`` / ...).
+        type: OurAirports facility type (``large_airport`` / ``medium_airport`` / ...),
+            or ``None`` for airports sourced only from OpenTravelData in broad mode.
         page_rank: OpenTravelData popularity weight (traffic-derived); larger = busier.
+        geoname_id: GeoNames feature id for the airport, if known (join key for more data).
+        source: Which source vouched for this airport: ``"ourairports"``,
+            ``"optd"``, or ``"both"``.
         alt_names: De-duplicated alternate / multilingual names and aliases used for matching.
     """
 
@@ -38,6 +42,8 @@ class Airport:
     longitude: Optional[float]
     type: Optional[str]
     page_rank: float = 0.0
+    geoname_id: Optional[int] = None
+    source: Optional[str] = None
     alt_names: List[str] = field(default_factory=list)
 
 

@@ -6,15 +6,17 @@ code, or a partial/misspelled combination — and get back the best-matching
 airports, scored and ranked.
 
 - 🔎 **Fuzzy & partial** — handles typos, missing words, and abbreviations.
-- 🌍 **Multilingual** — matches alternate names in many languages
-  (e.g. `Londres`, `ロンドン`, `Estambul`, `苏黎世`).
+- 🌍 **Multilingual** — matches alternate names in many languages via GeoNames
+  (e.g. `Londres`, `ロンドン`, `Мюнхен`, `北京`, `Estambul`, `Constantinople`).
 - 🏙️ **City *and* airport IATA codes** — `NYC` → `JFK` / `EWR` / `LGA`,
   each tagged with its metropolitan `city_iata`.
 - ✈️ **Commercial only** — airports with scheduled airline service; military
   bases, closed fields, and GA strips are filtered out.
 - 📊 **Popularity-aware ranking** — busier hubs float to the top via
   OpenTravelData page-rank.
-- 📦 **Zero network at runtime** — a compact dataset (~1 MB) ships in the wheel.
+- ⚡ **Fast** — a trigram prefilter keeps queries at ~5 ms even over ~160k aliases.
+- 📦 **Zero network at runtime** — a compact dataset (~1.5 MB, ~5,000 airports)
+  ships in the wheel.
 
 ## Install
 
@@ -42,7 +44,7 @@ hit.iata           # shortcut for hit.airport.iata
 hit.matched        # the alias/name that produced the match
 hit.airport        # Airport dataclass:
 #   iata, icao, name, city_iata, city_name, country_code, country_name,
-#   region, latitude, longitude, type, page_rank, alt_names
+#   region, latitude, longitude, type, page_rank, geoname_id, source, alt_names
 ```
 
 Look up a known code directly:
@@ -72,19 +74,37 @@ $ airportsearch "londres" -k 3
 
 ## Data sources
 
-The bundled dataset is built by [`scripts/build_data.py`](scripts/build_data.py)
-from open data:
+The bundled dataset (~5,000 airports) is built by
+[`scripts/build_data.py`](scripts/build_data.py) from open data:
 
 | Source | Provides | License |
 | --- | --- | --- |
-| [OpenTravelData](https://github.com/opentraveldata/opentraveldata) | City + airport IATA codes, page-rank, multilingual alternate names | Open (attribution) |
+| [OpenTravelData](https://github.com/opentraveldata/opentraveldata) | City + airport IATA codes, page-rank, geoname ids, alternate names | Open (attribution) |
 | [OurAirports](https://ourairports.com/data/) | Commercial filter (facility type + scheduled service), coordinates | Public domain |
+| [GeoNames](https://www.geonames.org/) | Deep multilingual alternate names (joined by geoname id) | CC BY 4.0 |
 
-Rebuild / refresh the dataset:
+Each record carries a `source` (`ourairports` / `optd` / `both`) so you can see
+which dataset vouched for it.
+
+### Rebuilding the dataset
 
 ```bash
-python scripts/build_data.py --refresh
+python scripts/build_data.py                    # broad + GeoNames (what ships)
+python scripts/build_data.py --coverage strict  # OurAirports scheduled-service only
+python scripts/build_data.py --no-geonames      # skip the ~200 MB GeoNames download
+python scripts/build_data.py --refresh          # force re-download of all sources
 ```
+
+**Coverage modes**
+
+- `broad` (default): OurAirports commercial airports **plus** any OpenTravelData
+  airport with `page_rank > 0`. OPTD only page-ranks airports with real scheduled
+  traffic, so this adds ~1,000 airports OurAirports misses while staying commercial.
+- `strict`: only airports OurAirports flags with scheduled airline service.
+
+GeoNames enrichment streams the large `alternateNamesV2.zip`, keeping only names
+for the geoname ids in the dataset (curated names are prioritized before the cap
+so native-script names are never truncated away).
 
 ## Development
 

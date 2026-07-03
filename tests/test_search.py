@@ -104,10 +104,14 @@ def test_empty_query_returns_empty():
 
 
 def test_commercial_only_no_closed_or_military():
-    # Closed airports (e.g. Berlin Tegel / Istanbul Ataturk) must never surface,
-    # because the dataset only includes fields with scheduled commercial service.
+    # Every airport is vouched for as commercial: either OurAirports gives it a
+    # commercial facility type, or OpenTravelData assigns it real scheduled
+    # traffic (page_rank > 0). Closed/military fields satisfy neither.
     for ap in a.get_index().airports:
-        assert ap.type in {"large_airport", "medium_airport", "small_airport"}
+        if ap.type is not None:
+            assert ap.type in {"large_airport", "medium_airport", "small_airport"}
+        else:
+            assert ap.page_rank > 0, f"{ap.iata} has no type and no traffic"
 
 
 def test_warm_query_is_fast():

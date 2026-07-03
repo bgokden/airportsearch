@@ -78,6 +78,8 @@ class AirportIndex:
                 longitude=rec.get("lo"),
                 type=rec.get("ty"),
                 page_rank=rec.get("pr", 0.0) or 0.0,
+                geoname_id=rec.get("gi"),
+                source=rec.get("src"),
                 alt_names=rec.get("al", []),
             )
             self.airports.append(airport)

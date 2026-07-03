@@ -41,3 +41,27 @@ def test_major_hubs_present():
     idx = a.get_index()
     for code in ["LHR", "JFK", "CDG", "FRA", "DXB", "HND", "SIN", "LAX", "AMS", "IST"]:
         assert idx.get(code) is not None, f"missing major hub {code}"
+
+
+def test_every_airport_has_known_source():
+    for ap in a.get_index().airports:
+        assert ap.source in {"ourairports", "optd", "both"}
+
+
+def test_broad_coverage_includes_optd_only_airports():
+    # Broad coverage should contribute airports OurAirports lacks.
+    sources = {ap.source for ap in a.get_index().airports}
+    assert "optd" in sources
+
+
+def test_geonames_enrichment_present():
+    # Major hubs should carry many multilingual aliases from the GeoNames join.
+    hnd = a.get_index().get("HND")
+    assert hnd is not None and hnd.geoname_id
+    assert len(hnd.alt_names) > 20, "expected rich multilingual alt-names for HND"
+
+
+def test_geoname_ids_are_positive_ints():
+    for ap in a.get_index().airports:
+        if ap.geoname_id is not None:
+            assert isinstance(ap.geoname_id, int) and ap.geoname_id > 0
